@@ -319,7 +319,7 @@ if __name__=='__main__':
         else:
             autoenc=aegen(BLOCK,residual=RESIDUAL,attention=ATTENTION,output_blocks=[BLOCK],norm=NORM)
         gen=extract_generator(autoenc,BLOCK,OUTPUT_BLOCKS)
-        discs=[conv_discrim(b,len(art_styles),attention=ATTENTION) for b in OUTPUT_BLOCKS]
+        discs=[conv_discrim(b,len(art_styles),attention=False) for b in OUTPUT_BLOCKS]
 
         noise_dim=gen.input.shape
         if FLAT==False and len(noise_dim)!=3:
@@ -349,7 +349,7 @@ if __name__=='__main__':
         """
         labels=images[-1]
         images=images[:-1]
-        batch_size=images[0].shape[0]
+        batch_size=tf.shape(images[0])[0]
         combined_loss_list=[]
         disc_loss_list=[]
         diversity_loss_list=[]
@@ -436,13 +436,19 @@ if __name__=='__main__':
             combined_loss_sum=sum(combined_loss_list)
         if gen_training is True or diversity_training is True:
             gradients_of_generator = gen_tape.gradient(combined_loss_sum, gen.trainable_variables)
-            generator_optimizer.apply_gradients(zip(gradients_of_generator, gen.trainable_variables))       
+            generator_optimizer.apply_gradients(zip(gradients_of_generator, gen.trainable_variables))     
+            del combined_loss_sum
+            del gradients_of_generator  
         for disc,disc_loss in zip(discs,disc_loss_list):
             if disc_training is True:
                 gradients_of_discriminator = disc_tape.gradient(disc_loss, disc.trainable_variables)
                 discriminator_optimizer.apply_gradients(zip(gradients_of_discriminator, disc.trainable_variables))
+                del gradients_of_discriminator
+        for disc_loss in disc_loss_list:
+            del disc_loss
 
         del disc_tape
+        del gen_tape
         return sum(disc_loss_list),sum(combined_loss_list),sum(diversity_loss_list),sum(class_label_loss_list)
 
     def train_step_ae(images): #training autoencoder to reconstruct things, not generate
@@ -496,6 +502,7 @@ if __name__=='__main__':
         epochs -- int. how many epochs to train GAN for
         picture -- bool. Whether to make generate images or not
         '''
+        #tf.config.run_functions_eagerly(True)
         check_dir_auto='./{}/{}/{}'.format(checkpoint_dir,name,'auto')
         check_dir_gen='./{}/{}/{}'.format(checkpoint_dir,name,'gen')
         check_dir_disc_list=['./{}/{}/{}/{}'.format(checkpoint_dir,name,'disc',b) for b in OUTPUT_BLOCKS]
@@ -550,9 +557,9 @@ if __name__=='__main__':
             print('pretraining')
             for epoch in range(pre_train_epochs):
                 avg_disc_loss=0.0
-                for i,images in enumerate(dataset):
+                for i,images in enumerate(local_dataset):
                     #for images in image_tuples:
-                    disc_loss,_,__,____=train_step_dist(images,gen_training=False,disc_training=True,diversity_training=False,one_hot=one_hot)
+                    disc_loss,_,__,____=train_step(images,gen_training=False,disc_training=True,diversity_training=False,one_hot=one_hot)
                     if i % 100 == 0:
                         print('\tbatch {} disc loss {}'.format(i,disc_loss))
                     avg_disc_loss+=disc_loss/LIMIT
@@ -567,6 +574,7 @@ if __name__=='__main__':
                                 os.makedirs(save_dir)
                             disc.save_weights(save_dir+'cp.ckpt')
         print('training')
+        
         #the intermediate model is used to generate the images
         intermediate_model=gen.get_layer('decoder')
         interm_noise_dim=intermediate_model.input.shape
@@ -612,9 +620,9 @@ if __name__=='__main__':
             avg_disc_loss=0.0
             avg_diversity_loss=0.0
             avg_class_loss=0.0
-            for i,images in enumerate(dataset):
+            for i,images in enumerate(local_dataset):
                 #for images in image_tuples:
-                disc_loss,gen_loss,div_loss,class_label_loss=train_step_dist(images,gen_training,disc_training,diversity_training,one_hot=one_hot)
+                disc_loss,gen_loss,div_loss,class_label_loss=train_step(images,gen_training,disc_training,diversity_training,one_hot=one_hot)
                 if i%100==0: #print out the loss every 100 batches
                     print('\tbatch {} disc_loss: {:.4f} gen loss: {:.4f} diversity loss: {:.4f} class loss: {:.4f}'.format(i,disc_loss,gen_loss,div_loss,class_label_loss))
                 avg_gen_loss+=gen_loss/LIMIT
@@ -667,9 +675,9 @@ if __name__=='__main__':
                     cv2.imwrite(new_img_path,gen_img)
                     print('the file exists == {}'.format(os.path.exists(new_img_path)))
     
-    dataset=get_dataset_gen_slow_labels(OUTPUT_BLOCKS,GLOBAL_BATCH_SIZE,one_hot,LIMIT,art_styles,genres)
+    local_dataset=get_dataset_gen_slow_labels(OUTPUT_BLOCKS,GLOBAL_BATCH_SIZE,one_hot,LIMIT,art_styles,genres)
     #dataset=get_dataset_gen_slow(OUTPUT_BLOCKS,GLOBAL_BATCH_SIZE,LIMIT,art_styles,genres)
-    dataset=strategy.experimental_distribute_dataset(dataset)
+    dataset=strategy.experimental_distribute_dataset(local_dataset)
     print('main loop')
     print('genres ',genres)
     print('styles ',art_styles)
